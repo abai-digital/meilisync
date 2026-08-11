@@ -127,7 +127,13 @@ def start(
             try:
                 async with lock:
                     await meili.handle_events(collection)
-                    await progress.set(**current_progress)
+                    # current_progress is None until either a stored progress
+                    # file is loaded at startup or the first CDC event arrives.
+                    # This periodic flush fires on a timer regardless, so an
+                    # unguarded ** here crash-loops the process on a fresh
+                    # deployment (no progress file yet, no events consumed yet).
+                    if current_progress:
+                        await progress.set(**current_progress)
             except Exception as e:
                 logger.exception(e)
                 logger.error(f"Error when insert data to MeiliSearch: {e}")
