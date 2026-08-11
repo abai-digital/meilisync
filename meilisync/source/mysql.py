@@ -71,7 +71,7 @@ class MySQL(Source):
                 if version >= "8.2.0":
                     await cur.execute("SHOW BINARY LOG STATUS")
                 else:
-                    await cur.execute("SHOW MASTER STATUS")
+                    await cur.execute("SHOW BINARY LOG STATUS")
                 ret = await cur.fetchone()
                 return {
                     "master_log_file": ret["File"],
