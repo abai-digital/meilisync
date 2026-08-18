@@ -1,4 +1,5 @@
 import asyncio
+import ssl as ssl_module
 from typing import List
 
 import asyncmy
@@ -28,9 +29,53 @@ class MySQL(Source):
         server_id: int = 1,
         **kwargs,
     ):
+        kwargs = self._normalize_ssl(kwargs)
         super().__init__(progress, tables, **kwargs)
         self.server_id = int(server_id)
         self.database = kwargs.get("database")
+
+    @staticmethod
+    def _normalize_ssl(kwargs: dict) -> dict:
+        """Allow ``ssl`` to be expressed in YAML.
+
+        asyncmy expects an ``ssl.SSLContext``; a bare ``ssl: true`` in the config
+        makes the connection hang instead of failing, which is hard to diagnose.
+        Accepts:
+
+            ssl: true              encrypt, do NOT verify the server certificate
+            ssl: {ca: /path/ca.pem}  encrypt and verify against that CA
+
+        ``ssl: true`` deliberately skips verification, matching how ProxySQL is
+        configured against the same backend (use_ssl=1 with no ssl_p2s_ca): the
+        server presents MySQL's auto-generated self-signed certificate, so
+        verification would fail. That protects against passive capture on the
+        LAN, NOT against an active man-in-the-middle. Supply ``ca`` to get both.
+        """
+        opt = kwargs.get("ssl")
+        if opt is None or isinstance(opt, ssl_module.SSLContext):
+            return kwargs
+        if isinstance(opt, bool):
+            if not opt:
+                kwargs.pop("ssl", None)
+                return kwargs
+            ctx = ssl_module.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl_module.CERT_NONE
+            kwargs["ssl"] = ctx
+            return kwargs
+        if isinstance(opt, dict):
+            ca = opt.get("ca")
+            ctx = ssl_module.create_default_context(cafile=ca) if ca else ssl_module.create_default_context()
+            if not ca:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl_module.CERT_NONE
+            else:
+                ctx.check_hostname = bool(opt.get("check_hostname", False))
+            if opt.get("cert") and opt.get("key"):
+                ctx.load_cert_chain(opt["cert"], opt["key"])
+            kwargs["ssl"] = ctx
+            return kwargs
+        raise ValueError(f"source.ssl must be bool, mapping or SSLContext, got {type(opt).__name__}")
 
     async def get_full_data(self, sync: Sync, size: int):
         if sync.fields:
@@ -125,12 +170,32 @@ class MySQL(Source):
                             data=data,
                             progress=self.progress,
                         )
-            except OperationalError as e:
+            except (OperationalError, AttributeError) as e:
+                # AttributeError is caught on purpose. When the server closes an
+                # idle connection (wait_timeout), asyncmy leaves its writer as
+                # None and the next call raises
+                #   AttributeError: 'NoneType' object has no attribute 'write'
+                # from Connection._write_bytes - NOT an OperationalError. It
+                # therefore escaped this handler and killed the process: 59
+                # restarts were logged against a backend with wait_timeout=1800.
                 logger.exception(f"Binlog stream error: {e}, sleep 10s and retry...")
                 await asyncio.sleep(10)
                 try:
                     await self.stream.close()
-                    self.ctl_conn.close()
+                except Exception as close_err:
+                    logger.warning(f"Closing binlog stream failed: {close_err}")
+                # Both connections are rebuilt, not just the control one. The
+                # previous code reconnected ctl_conn alone, so a dead self.conn
+                # left the stream permanently broken while the process kept
+                # looping.
+                for attr in ("ctl_conn", "conn"):
+                    try:
+                        getattr(self, attr).close()
+                    except Exception:
+                        pass
+                try:
+                    self.conn = await asyncmy.connect(**self.kwargs)
+                    self.ctl_conn = await asyncmy.connect(**self.kwargs)
                     await self._create_stream()
                 except Exception as e:
                     logger.exception(f"Recreate binlog stream error: {e}")
