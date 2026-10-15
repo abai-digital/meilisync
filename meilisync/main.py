@@ -1,5 +1,4 @@
 import os
-import re
 import asyncio
 from typing import List, Optional
 
@@ -16,13 +15,6 @@ from meilisync.version import __VERSION__
 
 app = typer.Typer()
 
-def expand_env(text: str) -> str:
-    return re.sub(
-        r"\$\{([A-Za-z0-9_]+)(?::-([^}]*))?\}",
-        lambda m: os.environ.get(m.group(1), m.group(2) if m.group(2) is not None else m.group(0)),
-        text,
-    )
-
 
 @app.callback()
 def callback(
@@ -38,9 +30,7 @@ def callback(
         if context.invoked_subcommand == "version":
             return
         context.ensure_object(dict)
-        with open(config_file) as f:
-            config = expand_env(f.read())
-        settings = Settings.model_validate(yaml.safe_load(config))
+        settings = Settings.load(config_file))
         if settings.debug:
             logger.debug(settings)
         if settings.sentry:

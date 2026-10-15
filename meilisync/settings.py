@@ -1,10 +1,28 @@
-from typing import List
+import os
+from typing import List, Tuple, Type
 
+import yaml
 from pydantic import BaseModel, Extra
-from pydantic_settings import BaseSettings
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from meilisync.enums import ProgressType, SourceType
 from meilisync.plugin import load_plugin
+
+
+class DictSettingsSource(PydanticBaseSettingsSource):
+    def __init__(self, settings_cls: Type[BaseSettings], data: dict):
+        super().__init__(settings_cls)
+        self.data = data or {}
+
+    def get_field_value(self, field, field_name: str):
+        return self.data.get(field_name), field_name, False
+
+    def __call__(self) -> dict:
+        return self.data
 
 
 class Source(BaseModel):
@@ -70,6 +88,32 @@ class Settings(BaseSettings, BasePlugin):
     meilisearch: MeiliSearch
     sync: List[Sync]
     sentry: Sentry | None = None
+
+    model_config = SettingsConfigDict(
+        env_nested_delimiter="__",
+        extra="ignore",
+    )
+
+    @classmethod
+    def load(cls, config_path: str):
+        data = {}
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                data = yaml.safe_load(f) or {}
+
+        class DynamicSettings(cls):
+            @classmethod
+            def settings_customise_sources(
+                cls,
+                settings_cls,
+                init_settings: PydanticBaseSettingsSource,
+                env_settings: PydanticBaseSettingsSource,
+                dotenv_settings: PydanticBaseSettingsSource,
+                file_secret_settings: PydanticBaseSettingsSource,
+            ) -> Tuple[PydanticBaseSettingsSource, ...]:
+                return (init_settings, env_settings, DictSettingsSource(settings_cls, data))
+
+        return DynamicSettings()
 
     @property
     def tables(self):
