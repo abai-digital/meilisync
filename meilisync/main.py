@@ -1,3 +1,4 @@
+import os
 import asyncio
 from typing import List, Optional
 
@@ -30,7 +31,7 @@ def callback(
             return
         context.ensure_object(dict)
         with open(config_file) as f:
-            config = f.read()
+            config = os.path.expandvars(f.read())
         settings = Settings.model_validate(yaml.safe_load(config))
         if settings.debug:
             logger.debug(settings)
