@@ -30,7 +30,7 @@ def callback(
         if context.invoked_subcommand == "version":
             return
         context.ensure_object(dict)
-        settings = Settings.load(config_file))
+        settings = Settings.load(config_file)
         if settings.debug:
             logger.debug(settings)
         if settings.sentry:
